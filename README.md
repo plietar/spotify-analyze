@@ -22,7 +22,7 @@ The `spotify-dissect` tool is a set of Wireshark dissectors used to analyze pack
 To use, run the `dissect.sh` script with the packet dump as an argument.
 
 ```
-~/spotify-analyze/dissect> ./dissect ../dump/dump.pcap
+~/spotify-analyze/dissect> ./dissect.sh ../dump/dump.pcap
 ```
 
 This will start wireshark with the right plugins loaded, and open the packet dump.

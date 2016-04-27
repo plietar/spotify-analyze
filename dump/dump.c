@@ -17,34 +17,9 @@
 #include "pcap.h"
 #include "shn.h"
 
-/*
- * First 64 bytes of shn_encrypt and shn_decrypt.
- * Used to locate these functions in the binary.
- * Hoping these won't change in future version.
- */
-const uint8_t SHN_ENCRYPT_SIGNATURE[] = {
-    0x55, 0x48, 0x89, 0xe5, 0x41, 0x57, 0x41, 0x56,
-    0x41, 0x54, 0x53, 0x8b, 0x87, 0xcc, 0x00, 0x00,
-    0x00, 0x85, 0xc0, 0x0f, 0x84, 0xac, 0x00, 0x00,
-    0x00, 0x85, 0xd2, 0x0f, 0x84, 0x58, 0x0d, 0x00,
-    0x00, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x2e,
-    0x0f, 0x1f, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x0f, 0xb6, 0x1e, 0xb9, 0x20, 0x00, 0x00, 0x00,
-    0x29, 0xc1, 0xd3, 0xe3, 0x31, 0x9f, 0xc8, 0x00,
-};
-
-const uint8_t SHN_DECRYPT_SIGNATURE[] = {
-    0x55, 0x48, 0x89, 0xe5, 0x41, 0x57, 0x41, 0x56,
-    0x41, 0x55, 0x41, 0x54, 0x53, 0x8b, 0x87, 0xcc,
-    0x00, 0x00, 0x00, 0x85, 0xc0, 0x0f, 0x84, 0xb3,
-    0x00, 0x00, 0x00, 0x85, 0xd2, 0x0f, 0x84, 0xa3,
-    0x0e, 0x00, 0x00, 0x66, 0x66, 0x66, 0x66, 0x2e,
-    0x0f, 0x1f, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x8b, 0x9f, 0xc4, 0x00, 0x00, 0x00, 0xb9, 0x20,
-    0x00, 0x00, 0x00, 0x29, 0xc1, 0xd3, 0xeb, 0x0f,
-};
-
-void patch_function(void *src, const void *dst);
+static void patch_function(void *src, const void *dst);
+static void *memrmem(const void *haystack, size_t haystack_size,
+                     const void *needle, size_t needle_size);
 
 #define DIRECTION_SEND 0
 #define DIRECTION_RECV 1
@@ -90,21 +65,34 @@ static void my_shn_decrypt(shn_ctx * c, UCHAR * buf, int nbytes) {
     }
 }
 
-static void find_and_patch(const char *name,
-                           void *text_start, size_t text_size,
-                           const void *signature, size_t signature_size,
-                           const void *replacement) {
+static const uint8_t SHN_CONSTANT[] = { 0x3a, 0xc5, 0x96, 0x69 };
+static const uint8_t PROLOGUE[] = { 0x55, 0x48, 0x89, 0xe5 };
 
-    void *original = memmem(text_start, text_size, signature, signature_size);
-
-    if (original == NULL) {
-        printf("%s: not found\n", name);
+/*
+ * Basic heuristic to find shn_encrypt and shn_decrypt.
+ * This should be fairly resistent to different spotify client versions.
+ *
+ * Locate the last occurence of the shn constant
+ * Walk back and find function prologues
+ * The first one is shn_finish (it contains the constant)
+ * The second one is shn_decrypt.
+ * The third one is shn_encrypt.
+ */
+static void find_shn_heuristic(void *text_start, size_t text_size, void **p_shn_encrypt, void ** p_shn_decrypt) {
+    void *search_end = memrmem(text_start, text_size, SHN_CONSTANT, sizeof(SHN_CONSTANT));
+    if (search_end == NULL) {
+        printf("Could not find shn constant\n");
         exit(1);
-    } else {
-        printf("%s: %p\n", name, original);
     }
 
-    patch_function(original, replacement);
+    search_end = memrmem(text_start, search_end - text_start, PROLOGUE, sizeof(PROLOGUE));
+    assert(search_end != NULL);
+
+    *p_shn_decrypt = search_end = memrmem(text_start, search_end - text_start, PROLOGUE, sizeof(PROLOGUE));
+    assert(search_end != NULL);
+
+    *p_shn_encrypt = search_end = memrmem(text_start, search_end - text_start, PROLOGUE, sizeof(PROLOGUE));
+    assert(search_end != NULL);
 }
 
 static void patch_shn(void) {
@@ -121,15 +109,14 @@ static void patch_shn(void) {
     void *text_start = getsectdata("__TEXT", "__text", &text_size) + aslr_offset;
     printf("text: %p size=0x%zx\n", text_start, text_size);
 
-    find_and_patch("shn_encrypt",
-                   text_start, text_size,
-                   SHN_ENCRYPT_SIGNATURE, sizeof(SHN_ENCRYPT_SIGNATURE),
-                   my_shn_encrypt);
+    void *original_shn_encrypt, *original_shn_decrypt;
+    find_shn_heuristic(text_start, text_size, &original_shn_encrypt, &original_shn_decrypt);
 
-    find_and_patch("shn_decrypt",
-                   text_start, text_size,
-                   SHN_DECRYPT_SIGNATURE, sizeof(SHN_DECRYPT_SIGNATURE),
-                   my_shn_decrypt);
+    printf("shn_encrypt: %p\n", original_shn_encrypt);
+    printf("shn_decrypt: %p\n", original_shn_decrypt);
+
+    patch_function(original_shn_encrypt, my_shn_encrypt);
+    patch_function(original_shn_decrypt, my_shn_decrypt);
 }
 
 /*
@@ -168,7 +155,7 @@ struct jmp64 {
     uint8_t  ret_opcode;
 } __attribute__((packed));
 
-void unprotect(void *address) {
+static void unprotect(void *address) {
     long pagesize = sysconf(_SC_PAGESIZE);
 
     address = (void *)((long)address & ~(pagesize - 1));
@@ -190,3 +177,20 @@ void patch_function(void *src, const void *dst) {
     jmp->mov_addr = (uint32_t)(((uintptr_t)dst) >> 32);
     jmp->ret_opcode = RET_OPCODE;
 }
+
+static void *memrmem(const void *haystack, size_t haystack_size,
+                     const void *needle, size_t needle_size) {
+    if (haystack_size < needle_size)
+        return NULL;
+    if (needle_size == 0)
+        return (void *) haystack + haystack_size;
+
+    const void *p;
+    for (p = haystack + haystack_size - needle_size; haystack_size >= needle_size; --p, --haystack_size) {
+        if (memcmp(p, needle, needle_size) == 0) {
+            return (void *) p;
+        }
+    }
+    return NULL;
+}
+

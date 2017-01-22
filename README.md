@@ -26,6 +26,3 @@ To use, run the `dissect.sh` script with the packet dump as an argument.
 ```
 
 This will start wireshark with the right plugins loaded, and open the packet dump.
-
-Wireshark currently has a bug which make some dissectors not work properly (mercury mostly). The basic dissecting should still work.
-[My fork](https://github.com/plietar/wireshark) contains a fix for that bug, and can be used instead.

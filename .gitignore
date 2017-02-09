@@ -1,3 +1,7 @@
 *.o
 *.dylib
 *.pcap
+SpotifyAudioPlayback
+spotifyThin
+spotNew
+

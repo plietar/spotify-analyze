@@ -3,7 +3,7 @@ CFLAGS=-Wall -Wextra -Wmissing-declarations
 
 TARGET=dump.dylib
 HEADERS=shn.h pcap.h
-OBJECTS=dump.o shn.o pcap.o
+OBJECTS=dump.o shn.o pcap.o iosshn.o
 
 $(TARGET): $(OBJECTS)
 	$(CC) $(CFLAGS) -ldl -dynamiclib -o $@ $^
